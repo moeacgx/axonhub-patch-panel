@@ -1,0 +1,8 @@
+.gocache/
+.gotelemetry/
+tmp-*
+*.exe
+*.test
+*.out
+dist/
+build/

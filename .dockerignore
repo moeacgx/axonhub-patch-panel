@@ -1,0 +1,9 @@
+.gocache
+.gotelemetry
+.git
+tmp-*
+*.exe
+*.test
+Dockerfile*
+docker-compose*.yml
+README.md

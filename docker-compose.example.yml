@@ -1,0 +1,36 @@
+services:
+  axonhub-patch:
+    build: .
+    container_name: axonhub-patch
+    restart: unless-stopped
+    environment:
+      AXONHUB_URL: http://axonhub-app:8090
+      REDIS_ADDR: redis:6379
+      THREAD_TTL: 720h
+      KEY_PREFIX: ahpatch
+      RESPECT_EXISTING_THREAD: "true"
+      RESPECT_EXISTING_TRACE: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    networks:
+      - axonhub-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: axonhub-patch-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - axonhub-net
+
+networks:
+  axonhub-net:
+    external: true
+    name: axonhub_default
+
+volumes:
+  redis-data:
