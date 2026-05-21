@@ -7,7 +7,10 @@
 - `AH-Thread-Id`：通过 Redis 维护会话状态映射，尽量让同一会话稳定落到同一线程。
 - `AH-Trace-Id`：每次请求新生成 `at-<uuid>`。
 
+可选补丁还可以把 Claude Opus 4.7 的旧 thinking 请求改写为 adaptive thinking，用于兼容不再接受 `thinking.type=enabled` 的上游。
+
 AxonHub 主程序不需要修改，线程页和追踪页继续使用 AxonHub 自带页面。
+面板支持密码保护和在线保存配置，保存后会写入 `/data/config.json` 并立即影响新请求。
 
 ## Docker Compose
 
@@ -66,10 +69,18 @@ API Key 继续填写 AxonHub 的 Key。
 - `REDIS_ADDR`：默认 `redis:6379`。
 - `REDIS_PASSWORD`：Redis 密码，可选。
 - `REDIS_DB`：Redis DB，默认 `0`。
+- `SETTINGS_PATH`：面板保存配置路径，默认 `/data/config.json`。
+- `PANEL_USERNAME`：面板用户名，默认 `admin`。
+- `PANEL_PASSWORD`：面板密码。为空时不启用密码保护，生产环境务必设置。
+- `THREAD_ENABLED`：是否启用 `AH-Thread-Id` 注入，默认 `true`。
+- `TRACE_ENABLED`：是否启用 `AH-Trace-Id` 注入，默认 `true`。
 - `THREAD_TTL`：线程映射保存时间，默认 `720h`。
 - `KEY_PREFIX`：Redis key 前缀，默认 `ahpatch`。
 - `RESPECT_EXISTING_THREAD`：是否保留客户端已有 `AH-Thread-Id`，默认 `true`。
 - `RESPECT_EXISTING_TRACE`：是否保留客户端已有 `AH-Trace-Id`，默认 `false`。
+- `CLAUDE_THINKING_REWRITE_ENABLED`：是否启用 Claude thinking 兼容补丁，默认 `false`。
+- `CLAUDE_THINKING_REWRITE_MODELS`：命中的模型 ID，逗号分隔，默认 `claude-opus-4-7`。
+- `CLAUDE_THINKING_REWRITE_EFFORT`：写入 `output_config.effort` 的值，默认 `xhigh`。
 
 ## 工作方式
 
@@ -85,8 +96,48 @@ API Key 继续填写 AxonHub 的 Key。
 
 普通 JSON 响应和 SSE 流式响应都会更新线程状态。
 
+## Claude Thinking 兼容补丁
+
+启用后，补丁只处理 `/v1/messages` 且模型命中 `CLAUDE_THINKING_REWRITE_MODELS` 的请求。
+
+当请求体里存在旧格式：
+
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}
+```
+
+会在转发给 AxonHub 前改写为：
+
+```json
+{
+  "thinking": {
+    "type": "adaptive"
+  },
+  "output_config": {
+    "effort": "xhigh"
+  }
+}
+```
+
+要启用这个补丁，把 compose 里的环境变量改成：
+
+```yaml
+CLAUDE_THINKING_REWRITE_ENABLED: "true"
+CLAUDE_THINKING_REWRITE_MODELS: claude-opus-4-7
+CLAUDE_THINKING_REWRITE_EFFORT: xhigh
+```
+
+也可以在 `/_panel/` 页面里直接启用、修改 effort、添加命中模型。这里添加模型只影响补丁规则，不会修改 AxonHub 主程序里的模型表。
+
 面板页面在：
 
 ```text
 /_panel/
 ```
+
+如果设置了 `PANEL_PASSWORD`，浏览器访问面板时使用 Basic Auth 登录。

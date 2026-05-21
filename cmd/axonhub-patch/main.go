@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"axonhub-patch-panel/internal/proxy"
+	"axonhub-patch-panel/internal/rewrite"
+	"axonhub-patch-panel/internal/settings"
 	"axonhub-patch-panel/internal/thread"
 	"axonhub-patch-panel/internal/ui"
 )
@@ -30,16 +33,44 @@ func main() {
 	}
 	defer store.Close()
 
+	settingsManager, err := settings.NewManager(cfg.SettingsPath, cfg.DefaultSettings())
+	if err != nil {
+		log.Fatalf("load settings: %v", err)
+	}
+
 	resolver := thread.NewResolver(store, thread.Options{
-		KeyPrefix:             cfg.KeyPrefix,
-		TTL:                   cfg.TTL,
-		RespectExistingThread: cfg.RespectExistingThread,
+		KeyPrefix: cfg.DefaultSettings().KeyPrefix,
+		TTL:       cfg.DefaultTTL(),
+	})
+	resolver.SetOptionsFunc(func() thread.Options {
+		current := settingsManager.Current()
+		ttl, err := current.ThreadTTLDuration()
+		if err != nil {
+			ttl = cfg.DefaultTTL()
+		}
+		return thread.Options{
+			KeyPrefix:             current.KeyPrefix,
+			TTL:                   ttl,
+			RespectExistingThread: current.RespectExistingThread,
+		}
 	})
 
 	proxyHandler, err := proxy.New(proxy.Options{
-		UpstreamURL:          cfg.UpstreamURL,
-		Resolver:             resolver,
-		RespectExistingTrace: cfg.RespectExistingTrace,
+		UpstreamURL: cfg.UpstreamURL,
+		Resolver:    resolver,
+		RuntimeOptions: func() proxy.RuntimeOptions {
+			current := settingsManager.Current()
+			return proxy.RuntimeOptions{
+				ThreadEnabled:        current.ThreadEnabled,
+				TraceEnabled:         current.TraceEnabled,
+				RespectExistingTrace: current.RespectExistingTrace,
+				ClaudeThinking: rewrite.ClaudeThinkingOptions{
+					Enabled: current.ClaudeThinkingRewriteEnabled,
+					Models:  current.ClaudeThinkingRewriteModels,
+					Effort:  current.ClaudeThinkingRewriteEffort,
+				},
+			}
+		},
 	})
 	if err != nil {
 		log.Fatalf("create proxy: %v", err)
@@ -50,7 +81,19 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	mux.Handle("/_panel/", http.StripPrefix("/_panel", ui.Handler(cfg.PublicConfig())))
+	mux.Handle("/_panel/", http.StripPrefix("/_panel", ui.Handler(ui.Options{
+		Config: func() ui.Config {
+			return ui.Config{
+				UpstreamURL: cfg.UpstreamURL,
+				RedisAddr:   cfg.RedisAddr,
+				Settings:    settingsManager.Current(),
+			}
+		},
+		Update:       settingsManager.Update,
+		Username:     cfg.PanelUsername,
+		Password:     cfg.PanelPassword,
+		AuthRequired: cfg.PanelPassword != "",
+	})))
 	mux.Handle("/", proxyHandler)
 
 	server := &http.Server{
@@ -66,41 +109,52 @@ func main() {
 }
 
 type Config struct {
-	ListenAddr            string
-	UpstreamURL           string
-	RedisAddr             string
-	RedisPassword         string
-	RedisDB               int
-	RedisTimeout          time.Duration
-	KeyPrefix             string
-	TTL                   time.Duration
-	RespectExistingThread bool
-	RespectExistingTrace  bool
+	ListenAddr             string
+	UpstreamURL            string
+	RedisAddr              string
+	RedisPassword          string
+	RedisDB                int
+	RedisTimeout           time.Duration
+	SettingsPath           string
+	PanelUsername          string
+	PanelPassword          string
+	DefaultRuntimeSettings settings.Settings
 }
 
-func (c Config) PublicConfig() ui.Config {
-	return ui.Config{
-		UpstreamURL:           c.UpstreamURL,
-		RedisAddr:             c.RedisAddr,
-		KeyPrefix:             c.KeyPrefix,
-		TTL:                   c.TTL.String(),
-		RespectExistingThread: c.RespectExistingThread,
-		RespectExistingTrace:  c.RespectExistingTrace,
+func (c Config) DefaultSettings() settings.Settings {
+	return c.DefaultRuntimeSettings
+}
+
+func (c Config) DefaultTTL() time.Duration {
+	ttl, err := c.DefaultRuntimeSettings.ThreadTTLDuration()
+	if err != nil {
+		return 30 * 24 * time.Hour
 	}
+	return ttl
 }
 
 func loadConfig() Config {
 	return Config{
-		ListenAddr:            env("LISTEN_ADDR", ":8080"),
-		UpstreamURL:           requiredEnv("AXONHUB_URL"),
-		RedisAddr:             env("REDIS_ADDR", "redis:6379"),
-		RedisPassword:         os.Getenv("REDIS_PASSWORD"),
-		RedisDB:               envInt("REDIS_DB", 0),
-		RedisTimeout:          envDuration("REDIS_TIMEOUT", 3*time.Second),
-		KeyPrefix:             env("KEY_PREFIX", "ahpatch"),
-		TTL:                   envDuration("THREAD_TTL", 30*24*time.Hour),
-		RespectExistingThread: envBool("RESPECT_EXISTING_THREAD", true),
-		RespectExistingTrace:  envBool("RESPECT_EXISTING_TRACE", false),
+		ListenAddr:    env("LISTEN_ADDR", ":8080"),
+		UpstreamURL:   requiredEnv("AXONHUB_URL"),
+		RedisAddr:     env("REDIS_ADDR", "redis:6379"),
+		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+		RedisDB:       envInt("REDIS_DB", 0),
+		RedisTimeout:  envDuration("REDIS_TIMEOUT", 3*time.Second),
+		SettingsPath:  env("SETTINGS_PATH", "/data/config.json"),
+		PanelUsername: env("PANEL_USERNAME", "admin"),
+		PanelPassword: os.Getenv("PANEL_PASSWORD"),
+		DefaultRuntimeSettings: settings.Settings{
+			ThreadEnabled:                envBool("THREAD_ENABLED", true),
+			TraceEnabled:                 envBool("TRACE_ENABLED", true),
+			KeyPrefix:                    env("KEY_PREFIX", "ahpatch"),
+			ThreadTTL:                    env("THREAD_TTL", "720h"),
+			RespectExistingThread:        envBool("RESPECT_EXISTING_THREAD", true),
+			RespectExistingTrace:         envBool("RESPECT_EXISTING_TRACE", false),
+			ClaudeThinkingRewriteEnabled: envBool("CLAUDE_THINKING_REWRITE_ENABLED", false),
+			ClaudeThinkingRewriteModels:  envList("CLAUDE_THINKING_REWRITE_MODELS", "claude-opus-4-7"),
+			ClaudeThinkingRewriteEffort:  env("CLAUDE_THINKING_REWRITE_EFFORT", "xhigh"),
+		},
 	}
 }
 
@@ -141,6 +195,19 @@ func envBool(key string, fallback bool) bool {
 		log.Fatalf("invalid %s: %v", key, err)
 	}
 	return b
+}
+
+func envList(key, fallback string) []string {
+	value := env(key, fallback)
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envDuration(key string, fallback time.Duration) time.Duration {

@@ -81,3 +81,38 @@ func TestResolverUsesExistingThreadHeader(t *testing.T) {
 		t.Fatalf("source mismatch: %s", result.Source)
 	}
 }
+
+func TestResolverUsesDynamicOptions(t *testing.T) {
+	store := NewMemoryStore()
+	opts := Options{
+		KeyPrefix: "before",
+		TTL:       time.Hour,
+		NewThreadID: func() string {
+			return "thread-before"
+		},
+	}
+	resolver := NewResolver(store, opts)
+	resolver.SetOptionsFunc(func() Options {
+		return opts
+	})
+
+	opts = Options{
+		KeyPrefix: "after",
+		TTL:       time.Hour,
+		NewThreadID: func() string {
+			return "thread-after"
+		},
+	}
+	result, err := resolver.Resolve(context.Background(), normalize.Document{
+		Format: normalize.FormatOpenAIChat,
+		Messages: []normalize.Message{
+			{Role: "user", Text: "Hello"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if result.ThreadID != "thread-after" {
+		t.Fatalf("thread id mismatch: %s", result.ThreadID)
+	}
+}

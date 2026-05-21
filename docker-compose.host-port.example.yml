@@ -6,14 +6,24 @@ services:
     environment:
       AXONHUB_URL: http://host.docker.internal:38098
       REDIS_ADDR: redis:6379
+      SETTINGS_PATH: /data/config.json
+      PANEL_USERNAME: admin
+      PANEL_PASSWORD: change-me
+      THREAD_ENABLED: "true"
+      TRACE_ENABLED: "true"
       THREAD_TTL: 720h
       KEY_PREFIX: ahpatch
       RESPECT_EXISTING_THREAD: "true"
       RESPECT_EXISTING_TRACE: "false"
+      CLAUDE_THINKING_REWRITE_ENABLED: "false"
+      CLAUDE_THINKING_REWRITE_MODELS: claude-opus-4-7
+      CLAUDE_THINKING_REWRITE_EFFORT: xhigh
     ports:
       - "8080:8080"
     depends_on:
       - redis
+    volumes:
+      - patch-data:/data
 
   redis:
     image: redis:7-alpine
@@ -25,3 +35,4 @@ services:
 
 volumes:
   redis-data:
+  patch-data:

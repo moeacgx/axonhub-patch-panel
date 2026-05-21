@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"axonhub-patch-panel/internal/normalize"
+	"axonhub-patch-panel/internal/rewrite"
 	"axonhub-patch-panel/internal/thread"
 )
 
@@ -18,6 +19,15 @@ type Options struct {
 	Resolver             *thread.Resolver
 	NewTraceID           func() string
 	RespectExistingTrace bool
+	ClaudeThinking       rewrite.ClaudeThinkingOptions
+	RuntimeOptions       func() RuntimeOptions
+}
+
+type RuntimeOptions struct {
+	ThreadEnabled        bool
+	TraceEnabled         bool
+	RespectExistingTrace bool
+	ClaudeThinking       rewrite.ClaudeThinkingOptions
 }
 
 type Proxy struct {
@@ -26,6 +36,8 @@ type Proxy struct {
 	resolver             *thread.Resolver
 	newTraceID           func() string
 	respectExistingTrace bool
+	claudeThinking       rewrite.ClaudeThinkingOptions
+	runtimeOptions       func() RuntimeOptions
 }
 
 func New(opts Options) (*Proxy, error) {
@@ -45,6 +57,8 @@ func New(opts Options) (*Proxy, error) {
 		resolver:             opts.Resolver,
 		newTraceID:           opts.NewTraceID,
 		respectExistingTrace: opts.RespectExistingTrace,
+		claudeThinking:       opts.ClaudeThinking,
+		runtimeOptions:       opts.RuntimeOptions,
 	}, nil
 }
 
@@ -55,6 +69,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = r.Body.Close()
+	runtime := p.runtime()
+
+	if rewritten, changed, err := rewrite.RewriteClaudeThinking(body, r.URL.Path, runtime.ClaudeThinking); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if changed {
+		body = rewritten
+	}
 
 	doc, _ := normalize.Canonicalize(body, r.URL.Path)
 	headerMap := mapHeaders(r.Header)
@@ -70,8 +92,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upstreamReq.Header = r.Header.Clone()
-	upstreamReq.Header.Set("AH-Thread-Id", result.ThreadID)
-	if !p.respectExistingTrace || upstreamReq.Header.Get("AH-Trace-Id") == "" {
+	if runtime.ThreadEnabled {
+		upstreamReq.Header.Set("AH-Thread-Id", result.ThreadID)
+	}
+	if runtime.TraceEnabled && (!runtime.RespectExistingTrace || upstreamReq.Header.Get("AH-Trace-Id") == "") {
 		upstreamReq.Header.Set("AH-Trace-Id", p.newTraceID())
 	}
 	upstreamReq.Host = p.upstream.Host
@@ -100,6 +124,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(responseBody)
+}
+
+func (p *Proxy) runtime() RuntimeOptions {
+	opts := RuntimeOptions{
+		ThreadEnabled:        true,
+		TraceEnabled:         true,
+		RespectExistingTrace: p.respectExistingTrace,
+		ClaudeThinking:       p.claudeThinking,
+	}
+	if p.runtimeOptions != nil {
+		opts = p.runtimeOptions()
+	}
+	return opts
 }
 
 func (p *Proxy) streamResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, doc normalize.Document, threadID string) {

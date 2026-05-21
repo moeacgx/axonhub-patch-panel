@@ -8,6 +8,6 @@ RUN go test ./... && CGO_ENABLED=0 GOOS=linux go build -o /out/axonhub-patch ./c
 FROM alpine:3.20
 WORKDIR /app
 COPY --from=build /out/axonhub-patch /app/axonhub-patch
+VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/axonhub-patch"]
-

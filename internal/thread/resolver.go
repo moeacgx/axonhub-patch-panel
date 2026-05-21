@@ -28,8 +28,9 @@ type Options struct {
 }
 
 type Resolver struct {
-	store Store
-	opts  Options
+	store       Store
+	opts        Options
+	optionsFunc func() Options
 }
 
 type Result struct {
@@ -50,20 +51,25 @@ func NewResolver(store Store, opts Options) *Resolver {
 	return &Resolver{store: store, opts: opts}
 }
 
+func (r *Resolver) SetOptionsFunc(fn func() Options) {
+	r.optionsFunc = fn
+}
+
 func (r *Resolver) Resolve(ctx context.Context, doc normalize.Document, headers map[string]string) (Result, error) {
-	if r.opts.RespectExistingThread {
+	opts := r.options()
+	if opts.RespectExistingThread {
 		if existing := headerValue(headers, "AH-Thread-Id"); existing != "" {
 			return Result{ThreadID: existing, Source: SourceExistingHeader}, nil
 		}
 	}
 
 	if doc.ResponseID != "" {
-		if threadID, ok, err := r.lookup(ctx, r.key("response", doc.ResponseID)); ok || err != nil {
+		if threadID, ok, err := r.lookup(ctx, r.keyWithOptions(opts, "response", doc.ResponseID)); ok || err != nil {
 			return Result{ThreadID: threadID, Source: SourceResponseID}, err
 		}
 	}
 	if doc.SessionID != "" {
-		if threadID, ok, err := r.lookup(ctx, r.key("session", doc.SessionID)); ok || err != nil {
+		if threadID, ok, err := r.lookup(ctx, r.keyWithOptions(opts, "session", doc.SessionID)); ok || err != nil {
 			return Result{ThreadID: threadID, Source: SourceSessionID}, err
 		}
 	}
@@ -73,15 +79,15 @@ func (r *Resolver) Resolve(ctx context.Context, doc normalize.Document, headers 
 		return Result{}, err
 	}
 	if lookupHash != "" {
-		if threadID, ok, err := r.lookup(ctx, r.key("state", lookupHash)); ok || err != nil {
+		if threadID, ok, err := r.lookup(ctx, r.keyWithOptions(opts, "state", lookupHash)); ok || err != nil {
 			return Result{ThreadID: threadID, Source: SourceStateHash}, err
 		}
 	}
 
-	threadID := r.opts.NewThreadID()
+	threadID := opts.NewThreadID()
 	if lookupHash != "" {
-		key := r.key("state", lookupHash)
-		ok, err := r.store.SetNX(ctx, key, threadID, r.opts.TTL)
+		key := r.keyWithOptions(opts, "state", lookupHash)
+		ok, err := r.store.SetNX(ctx, key, threadID, opts.TTL)
 		if err != nil {
 			return Result{}, err
 		}
@@ -94,25 +100,26 @@ func (r *Resolver) Resolve(ctx context.Context, doc normalize.Document, headers 
 		}
 	}
 	if doc.ResponseID != "" {
-		_ = r.store.Set(ctx, r.key("response", doc.ResponseID), threadID, r.opts.TTL)
+		_ = r.store.Set(ctx, r.keyWithOptions(opts, "response", doc.ResponseID), threadID, opts.TTL)
 	}
 	if doc.SessionID != "" {
-		_ = r.store.Set(ctx, r.key("session", doc.SessionID), threadID, r.opts.TTL)
+		_ = r.store.Set(ctx, r.keyWithOptions(opts, "session", doc.SessionID), threadID, opts.TTL)
 	}
 	return Result{ThreadID: threadID, Source: SourceCreated}, nil
 }
 
 func (r *Resolver) RememberState(ctx context.Context, stateHash, responseID, threadID string) error {
+	opts := r.options()
 	if threadID == "" {
 		return nil
 	}
 	if stateHash != "" {
-		if err := r.store.Set(ctx, r.key("state", stateHash), threadID, r.opts.TTL); err != nil {
+		if err := r.store.Set(ctx, r.keyWithOptions(opts, "state", stateHash), threadID, opts.TTL); err != nil {
 			return err
 		}
 	}
 	if responseID != "" {
-		if err := r.store.Set(ctx, r.key("response", responseID), threadID, r.opts.TTL); err != nil {
+		if err := r.store.Set(ctx, r.keyWithOptions(opts, "response", responseID), threadID, opts.TTL); err != nil {
 			return err
 		}
 	}
@@ -131,7 +138,28 @@ func (r *Resolver) lookup(ctx context.Context, key string) (string, bool, error)
 }
 
 func (r *Resolver) key(kind, value string) string {
-	return fmt.Sprintf("%s:%s:%s", r.opts.KeyPrefix, kind, value)
+	return r.keyWithOptions(r.options(), kind, value)
+}
+
+func (r *Resolver) keyWithOptions(opts Options, kind, value string) string {
+	return fmt.Sprintf("%s:%s:%s", opts.KeyPrefix, kind, value)
+}
+
+func (r *Resolver) options() Options {
+	opts := r.opts
+	if r.optionsFunc != nil {
+		opts = r.optionsFunc()
+	}
+	if opts.KeyPrefix == "" {
+		opts.KeyPrefix = "ahpatch"
+	}
+	if opts.TTL == 0 {
+		opts.TTL = 30 * 24 * time.Hour
+	}
+	if opts.NewThreadID == nil {
+		opts.NewThreadID = defaultThreadID
+	}
+	return opts
 }
 
 func headerValue(headers map[string]string, key string) string {
