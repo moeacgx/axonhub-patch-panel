@@ -51,6 +51,9 @@ func Canonicalize(body []byte, requestPath string) (Document, error) {
 }
 
 func LookupHash(doc Document) (string, error) {
+	if firstTurn := firstUserTurnOnly(doc.Messages); len(firstTurn) > 0 {
+		return HashMessages(firstTurn)
+	}
 	messages := removeLastUserTurn(doc.Messages)
 	if len(messages) == 0 {
 		messages = doc.Messages
@@ -315,6 +318,27 @@ func removeLastUserTurn(messages []Message) []Message {
 	out = append(out, messages[:idx]...)
 	out = append(out, messages[idx+1:]...)
 	return out
+}
+
+func firstUserTurnOnly(messages []Message) []Message {
+	if hasAssistantMessage(messages) {
+		return nil
+	}
+	for _, msg := range messages {
+		if strings.EqualFold(msg.Role, "user") {
+			return []Message{{Role: "user", Text: msg.Text}}
+		}
+	}
+	return nil
+}
+
+func hasAssistantMessage(messages []Message) bool {
+	for _, msg := range messages {
+		if strings.EqualFold(msg.Role, "assistant") {
+			return true
+		}
+	}
+	return false
 }
 
 func assistantMessagesFromResponse(body []byte) (string, []Message, error) {

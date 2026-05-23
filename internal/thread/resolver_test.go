@@ -57,6 +57,151 @@ func TestResolverReusesThreadFromPreviousStateHash(t *testing.T) {
 	}
 }
 
+func TestResolverReusesThreadWhenOnlySystemWrapperChanges(t *testing.T) {
+	store := NewMemoryStore()
+	threads := []string{"thread-first", "thread-second"}
+	index := 0
+	resolver := NewResolver(store, Options{
+		KeyPrefix: "test",
+		TTL:       time.Hour,
+		NewThreadID: func() string {
+			id := threads[index]
+			if index < len(threads)-1 {
+				index++
+			}
+			return id
+		},
+	})
+
+	first := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。剩余预算 120000。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+		},
+	}
+	firstResult, err := resolver.Resolve(context.Background(), first, nil)
+	if err != nil {
+		t.Fatalf("Resolve first returned error: %v", err)
+	}
+
+	second := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date><elapsed_seconds>31</elapsed_seconds></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。剩余预算 119500。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+		},
+	}
+	secondResult, err := resolver.Resolve(context.Background(), second, nil)
+	if err != nil {
+		t.Fatalf("Resolve second returned error: %v", err)
+	}
+
+	if secondResult.ThreadID != firstResult.ThreadID {
+		t.Fatalf("expected same thread when only wrapper changes\nfirst: %s\nsecond: %s", firstResult.ThreadID, secondResult.ThreadID)
+	}
+}
+
+func TestResolverReusesRememberedStateWhenWrapperChanges(t *testing.T) {
+	store := NewMemoryStore()
+	resolver := NewResolver(store, Options{
+		KeyPrefix: "test",
+		TTL:       time.Hour,
+		NewThreadID: func() string {
+			return "thread-first"
+		},
+	})
+
+	first := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。剩余预算 120000。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+		},
+	}
+	firstResult, err := resolver.Resolve(context.Background(), first, nil)
+	if err != nil {
+		t.Fatalf("Resolve first returned error: %v", err)
+	}
+
+	stateHash, _, err := normalize.StateAfterResponse(first, []byte(`{"id":"resp_1","output":[{"role":"assistant","content":"收到"}]}`))
+	if err != nil {
+		t.Fatalf("StateAfterResponse returned error: %v", err)
+	}
+	if err := resolver.RememberState(context.Background(), stateHash, "resp_1", firstResult.ThreadID); err != nil {
+		t.Fatalf("RememberState returned error: %v", err)
+	}
+
+	second := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date><elapsed_seconds>31</elapsed_seconds></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。剩余预算 119500。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+			{Role: "assistant", Text: "收到"},
+			{Role: "user", Text: "继续"},
+		},
+	}
+	secondResult, err := resolver.Resolve(context.Background(), second, nil)
+	if err != nil {
+		t.Fatalf("Resolve second returned error: %v", err)
+	}
+
+	if secondResult.ThreadID != firstResult.ThreadID {
+		t.Fatalf("expected same thread from remembered state when only wrapper changes\nfirst: %s\nsecond: %s", firstResult.ThreadID, secondResult.ThreadID)
+	}
+}
+
+func TestResolverDoesNotMergeDifferentFirstUserTurnsWithSameWrapper(t *testing.T) {
+	store := NewMemoryStore()
+	threads := []string{"thread-first", "thread-second"}
+	index := 0
+	resolver := NewResolver(store, Options{
+		KeyPrefix: "test",
+		TTL:       time.Hour,
+		NewThreadID: func() string {
+			id := threads[index]
+			if index < len(threads)-1 {
+				index++
+			}
+			return id
+		},
+	})
+
+	first := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+		},
+	}
+	firstResult, err := resolver.Resolve(context.Background(), first, nil)
+	if err != nil {
+		t.Fatalf("Resolve first returned error: %v", err)
+	}
+
+	second := normalize.Document{
+		Format: normalize.FormatOpenAIResponses,
+		Messages: []normalize.Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。"},
+			{Role: "user", Text: "帮我检查这个 Go 补丁为什么不并线程"},
+		},
+	}
+	secondResult, err := resolver.Resolve(context.Background(), second, nil)
+	if err != nil {
+		t.Fatalf("Resolve second returned error: %v", err)
+	}
+
+	if secondResult.ThreadID == firstResult.ThreadID {
+		t.Fatalf("expected different first user turns to create different threads, both got %s", secondResult.ThreadID)
+	}
+}
+
 func TestResolverUsesExistingThreadHeader(t *testing.T) {
 	store := NewMemoryStore()
 	resolver := NewResolver(store, Options{

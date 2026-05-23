@@ -91,6 +91,33 @@ func TestLookupHashDropsLastUserTurn(t *testing.T) {
 	}
 }
 
+func TestLookupHashUsesFirstUserTurnForFirstRequest(t *testing.T) {
+	doc := Document{
+		Format: FormatOpenAIResponses,
+		Messages: []Message{
+			{Role: "system", Text: "<environment_context><current_date>2026-05-24</current_date></environment_context>"},
+			{Role: "developer", Text: "你是一个编码助手。剩余预算 120000。"},
+			{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+		},
+	}
+
+	got, err := LookupHash(doc)
+	if err != nil {
+		t.Fatalf("LookupHash returned error: %v", err)
+	}
+
+	want, err := HashMessages([]Message{
+		{Role: "user", Text: "去把美国 netcup 那个 axonhub 的补丁容器找出来"},
+	})
+	if err != nil {
+		t.Fatalf("HashMessages returned error: %v", err)
+	}
+
+	if got != want {
+		t.Fatalf("lookup hash should use first user turn for first request\nwant: %s\n got: %s", want, got)
+	}
+}
+
 func TestStateHashIncludesAssistantResponse(t *testing.T) {
 	doc := Document{
 		Format: FormatOpenAIChat,
