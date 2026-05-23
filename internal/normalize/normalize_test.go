@@ -153,6 +153,37 @@ func TestStateAfterStreamCollectsOpenAIChatDeltas(t *testing.T) {
 	}
 }
 
+func TestStateAfterStreamSupportsCRLFFraming(t *testing.T) {
+	doc := Document{
+		Format: FormatOpenAIChat,
+		Messages: []Message{
+			{Role: "user", Text: "First"},
+		},
+	}
+	streamBody := []byte("data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Sec\"}}]}\r\n\r\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"ond\"}}]}\r\n\r\n" +
+		"data: [DONE]\r\n\r\n")
+
+	next, responseID, err := StateAfterStream(doc, streamBody)
+	if err != nil {
+		t.Fatalf("StateAfterStream returned error: %v", err)
+	}
+
+	wantHash, err := HashMessages([]Message{
+		{Role: "user", Text: "First"},
+		{Role: "assistant", Text: "Second"},
+	})
+	if err != nil {
+		t.Fatalf("HashMessages returned error: %v", err)
+	}
+	if next != wantHash {
+		t.Fatalf("state hash mismatch\nwant: %s\n got: %s", wantHash, next)
+	}
+	if responseID != "chatcmpl_1" {
+		t.Fatalf("response id mismatch: %s", responseID)
+	}
+}
+
 func TestStateAfterStreamCollectsOpenAIResponseDeltas(t *testing.T) {
 	doc := Document{
 		Format: FormatOpenAIResponses,

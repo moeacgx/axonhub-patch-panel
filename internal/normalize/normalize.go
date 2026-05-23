@@ -402,6 +402,9 @@ func assistantMessagesFromStream(body []byte) (string, []Message, error) {
 }
 
 func sseDataLines(body []byte) []string {
+	body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+	body = bytes.ReplaceAll(body, []byte("\r"), []byte("\n"))
+
 	var events []string
 	for _, block := range bytes.Split(body, []byte("\n\n")) {
 		var lines []string
